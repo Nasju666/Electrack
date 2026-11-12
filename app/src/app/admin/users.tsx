@@ -1,101 +1,92 @@
-import { useFocusEffect } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import { supabase } from '@/lib/supabase';
 import type { Profile } from '@/lib/types';
-import { Button, Card, colors, ErrorText, Screen } from '@/lib/ui';
+import { Card, Chips, colors, ErrorText, Field, Header, Pill, Screen, StateCard, styles } from '@/lib/ui';
 
-type UserRow = Profile & { user_createdat: string; household: { household_name: string }[] | { household_name: string } | null };
+type UserRow = Profile & { household: { household_name: string }[] | { household_name: string } | null };
+type Filter = 'all' | 'active' | 'inactive';
 
-const householdOf = (u: UserRow) => {
-  const h = Array.isArray(u.household) ? u.household[0] : u.household;
-  return h?.household_name ?? null;
-};
+const householdOf = (u: UserRow) => (Array.isArray(u.household) ? u.household[0] : u.household)?.household_name ?? null;
 
 export default function AdminUsers() {
+  const router = useRouter();
   const [users, setUsers] = useState<UserRow[] | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<Filter>('all');
   const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('users')
-      .select('*, household(household_name)')
-      .order('user_role')
-      .order('user_lastname');
-    if (error) return setError(error.message);
-    setError(null);
-    setUsers((data ?? []) as unknown as UserRow[]);
-  }, []);
 
   useFocusEffect(
     useCallback(() => {
-      load();
-    }, [load]),
+      supabase
+        .from('users')
+        .select('*, household(household_name)')
+        .eq('user_role', 'Resident')
+        .order('user_lastname')
+        .then(({ data, error }) => {
+          if (error) return setError(error.message);
+          setError(null);
+          setUsers((data ?? []) as unknown as UserRow[]);
+        });
+    }, []),
   );
 
-  function confirm(user: UserRow) {
-    const deactivate = user.account_status === 'Active';
-    const name = `${user.user_firstname} ${user.user_lastname}`;
-    Alert.alert(
-      deactivate ? `Deactivate ${name}?` : `Reactivate ${name}?`,
-      deactivate
-        ? 'They will be locked out of their household data until you reactivate the account. Nothing is deleted.'
-        : 'They will be able to sign in and see their household data again.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: deactivate ? 'Deactivate' : 'Reactivate',
-          style: deactivate ? 'destructive' : 'default',
-          onPress: async () => {
-            setBusyId(user.user_id);
-            const { error } = await supabase.rpc('admin_set_account_status', {
-              p_user_id: user.user_id,
-              p_status: deactivate ? 'Inactive' : 'Active',
-            });
-            setBusyId(null);
-            if (error) setError(error.message);
-            load();
-          },
-        },
-      ],
-    );
-  }
+  const all = users ?? [];
+  const active = all.filter((u) => u.account_status === 'Active').length;
+  const words = search.trim().toLowerCase();
+  const shown = all.filter(
+    (u) =>
+      (filter === 'all' || (filter === 'active') === (u.account_status === 'Active')) &&
+      (!words || `${u.user_firstname} ${u.user_lastname} ${u.user_email} ${householdOf(u) ?? ''}`.toLowerCase().includes(words)),
+  );
 
   return (
-    <Screen edges={[]}>
+    <Screen>
+      <Header title="User accounts" admin subtitle={users ? `${all.length} resident ${all.length === 1 ? 'account' : 'accounts'}` : undefined} />
+      <Field label="Search" icon="search-outline" value={search} onChangeText={setSearch} placeholder="Name, email or household" autoCapitalize="none" />
+      <Chips
+        options={[
+          { id: 'all', label: `All ${all.length}` },
+          { id: 'active', label: `Active ${active}` },
+          { id: 'inactive', label: `Deactivated ${all.length - active}` },
+        ]}
+        value={filter}
+        onChange={setFilter}
+      />
       <ErrorText>{error}</ErrorText>
+
       {!users ? (
-        error ? null : <ActivityIndicator style={{ marginTop: 40 }} color={colors.brand} />
+        error ? null : <StateCard kind="loading" title="Loading accounts" />
+      ) : shown.length === 0 ? (
+        <StateCard kind="empty" title="No matching accounts" text={all.length === 0 ? 'Resident accounts appear here after they sign up.' : 'Try a different search or filter.'} />
       ) : (
-        users.map((user) => {
-          const active = user.account_status === 'Active';
-          const admin = user.user_role === 'Admin';
+        shown.map((u) => {
+          const isActive = u.account_status === 'Active';
           return (
-            <Card key={user.user_id}>
-              <View style={s.top}>
-                <Text style={s.name} numberOfLines={1}>
-                  {user.user_firstname} {user.user_lastname}
-                </Text>
-                <View style={[s.badge, { backgroundColor: active ? '#DDF3E9' : '#F6E1DF' }]}>
-                  <Text style={[s.badgeText, { color: active ? '#11734C' : colors.danger }]}>
-                    {admin ? 'Admin' : active ? 'Active' : 'Deactivated'}
+            <Card key={u.user_id} onPress={() => router.push({ pathname: '/admin-user', params: { id: u.user_id } })}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View style={{ width: 42, height: 42, borderRadius: 13, backgroundColor: 'rgba(56,198,244,0.14)', alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ color: colors.cyan, fontWeight: '700' }}>{`${u.user_firstname[0] ?? ''}${u.user_lastname[0] ?? ''}`.toUpperCase()}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.h3} numberOfLines={1}>
+                    {u.user_firstname} {u.user_lastname}
+                  </Text>
+                  <Text style={styles.small} numberOfLines={1}>
+                    {u.user_email}
                   </Text>
                 </View>
+                <Ionicons name="chevron-forward" size={16} color={colors.muted} />
               </View>
-              <Text style={s.sub}>{user.user_email}</Text>
-              <Text style={s.sub}>
-                {admin ? 'Administrator' : (householdOf(user) ?? 'No household set up yet')} · joined{' '}
-                {new Date(user.user_createdat).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })}
-              </Text>
-              {admin ? null : (
-                <Button
-                  title={active ? 'Deactivate account' : 'Reactivate account'}
-                  kind={active ? 'danger' : 'secondary'}
-                  busy={busyId === user.user_id}
-                  onPress={() => confirm(user)}
-                />
-              )}
+              <View style={styles.divider} />
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={[styles.small, { flex: 1 }]} numberOfLines={1}>
+                  {householdOf(u) ?? 'No household set up yet'}
+                </Text>
+                <Pill text={isActive ? 'Active' : 'Deactivated'} tone={isActive ? 'ok' : 'danger'} />
+              </View>
             </Card>
           );
         })
@@ -103,11 +94,3 @@ export default function AdminUsers() {
     </Screen>
   );
 }
-
-const s = StyleSheet.create({
-  top: { flexDirection: 'row', alignItems: 'center' },
-  name: { flex: 1, fontSize: 17, fontWeight: '600', color: colors.text, paddingRight: 8 },
-  sub: { fontSize: 13, color: colors.muted, marginTop: 2 },
-  badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  badgeText: { fontSize: 12, fontWeight: '600' },
-});

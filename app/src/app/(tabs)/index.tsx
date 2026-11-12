@@ -1,255 +1,195 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
+import { useCallback, useRef, useState } from 'react';
+import { Pressable, Text, View } from 'react-native';
+import { useUnreadAlerts } from '@/lib/alerts';
+import { lookOf } from '@/lib/appliances';
 import { useAuth } from '@/lib/auth';
+import { formatKw, formatKwh, formatPeso, manilaClock } from '@/lib/format';
+import { useLive } from '@/lib/live';
 import { supabase } from '@/lib/supabase';
-import { formatKwh, formatPeso, formatWatts, manilaClock, MONTHS } from '@/lib/format';
-import { isRecent, type Appliance, type Reading } from '@/lib/types';
-import { Button, colors } from '@/lib/ui';
+import { change, dayOf, fetchUsage, hourOf, lastDays, sumBy, total, type UsageRow } from '@/lib/usage';
+import { Bars, Card, colors, ErrorText, Header, IconButton, IconTile, Pill, Screen, SectionTitle, Stat, StateCard, styles } from '@/lib/ui';
 
-type Row = Appliance & { smart_plug: { smartplug_name: string | null } | null };
-
-type Bill = {
-  usage_sofar_kwh: number;
-  forecast_kwh: number | null;
-  estimated_cost: number;
-  cost_sofar: number;
-  rate_per_kwh: number;
-};
+type Bill = { forecast_kwh: number | null; estimated_cost: number; cost_sofar: number; rate_per_kwh: number };
+type Insight = { insight_type: string; recommendation_text: string; insight_date: string | null };
 
 export default function Home() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const { household } = useAuth();
-  const [appliances, setAppliances] = useState<Row[] | null>(null);
-  const [latest, setLatest] = useState<Record<number, Reading>>({});
+  const { profile, household } = useAuth();
+  const live = useLive();
+  const unread = useUnreadAlerts();
+
+  const [week, setWeek] = useState<UsageRow[] | null>(null); // per day, last 7 days
+  const [hours, setHours] = useState<UsageRow[]>([]); // per hour, yesterday and today
+  const [bill, setBill] = useState<Bill | null>(null);
+  const [insight, setInsight] = useState<Insight | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // undefined = still loading, null = no approved rate yet
-  const [bill, setBill] = useState<Bill | null | undefined>(undefined);
-  const [now, setNow] = useState(Date.now());
 
-  // Re-render every second so "x s ago" and the offline state stay current.
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  // Keep the newest reading per appliance, wherever it came from.
-  const remember = useCallback((r: Reading) => {
-    setLatest((prev) => {
-      const have = prev[r.appliance_id];
-      if (have && Date.parse(have.reading_timestamp) >= Date.parse(r.reading_timestamp)) return prev;
-      return { ...prev, [r.appliance_id]: { ...r, reading_watts: Number(r.reading_watts) } };
-    });
-  }, []);
-
-  // Live feed. The database only sends this user readings from their own household.
-  useEffect(() => {
-    const channel = supabase
-      .channel('live-readings')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'consumption_reading' }, (payload) =>
-        remember(payload.new as Reading),
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [remember]);
-
-  // Reload the appliance list whenever this tab comes back into view,
-  // because devices and appliances are edited on other screens.
   const requestId = useRef(0);
   useFocusEffect(
     useCallback(() => {
       const id = ++requestId.current;
-      // Recalculate this month's estimate each time the tab opens.
-      supabase.rpc('refresh_bill_estimate').then(({ data }) => {
-        if (id === requestId.current) setBill((data as Bill | null) ?? null);
-      });
+      live.reload();
       (async () => {
-        const { data, error } = await supabase
-          .from('appliance')
-          .select('*, smart_plug(smartplug_name)')
-          .eq('appliance_status', 'Active')
-          .order('smartplug_id')
-          .order('outlet_no');
-        if (id !== requestId.current) return;
-        if (error) return setError(error.message);
-        setError(null);
-        const list = (data ?? []) as unknown as Row[];
-        setAppliances(list);
-        for (const a of list) {
-          const { data: rows } = await supabase
-            .from('consumption_reading')
-            .select('appliance_id, reading_watts, reading_timestamp')
-            .eq('appliance_id', a.appliance_id)
-            .order('reading_timestamp', { ascending: false })
-            .limit(1);
+        try {
+          const [days, hourly, estimate, insights] = await Promise.all([
+            fetchUsage(6, 'day'),
+            fetchUsage(1, 'hour'),
+            supabase.rpc('refresh_bill_estimate'),
+            supabase.from('ai_recommendation').select('insight_type, recommendation_text, insight_date, estimated_savings_kwh').order('estimated_savings_kwh', { ascending: false, nullsFirst: false }),
+          ]);
           if (id !== requestId.current) return;
-          if (rows?.[0]) remember(rows[0] as Reading);
+          setWeek(days);
+          setHours(hourly);
+          setBill((estimate.data as Bill | null) ?? null);
+          // Show yesterday's unusual usage if there is one; otherwise the biggest saving tip.
+          const list = (insights.data ?? []) as Insight[];
+          const yesterday = lastDays(2)[0].key;
+          setInsight(
+            list.find((i) => i.insight_type === 'Unusual Usage' && (i.insight_date ?? '') >= yesterday) ??
+              list.find((i) => i.insight_type === 'Energy Saving') ??
+              null,
+          );
+          setError(null);
+        } catch (e) {
+          if (id === requestId.current) setError(e instanceof Error ? e.message : String(e));
         }
       })();
-    }, [remember]),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
   );
 
-  const live = (a: Row) => isRecent(latest[a.appliance_id]?.reading_timestamp, now);
-  const totalWatts = (appliances ?? []).reduce((sum, a) => sum + (live(a) ? latest[a.appliance_id].reading_watts : 0), 0);
+  const clock = manilaClock();
+  const hour = clock.getUTCHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const days = lastDays(7);
+  const today = days[6].key;
+  const yesterday = days[5].key;
 
-  let body;
-  if (error) {
-    body = <Empty title="Could not load appliances" text={error} />;
-  } else if (!appliances) {
-    body = <ActivityIndicator style={{ marginTop: 48 }} color={colors.brand} />;
-  } else if (appliances.length === 0) {
-    body = (
-      <Empty
-        title="Nothing is being monitored yet"
-        text="Pair an ElecTrack device, then tell the app what is plugged into it."
-      >
-        <Button title="Set up devices" onPress={() => router.push('/devices')} />
-      </Empty>
-    );
-  } else {
-    body = (
-      <FlatList
-        data={appliances}
-        keyExtractor={(a) => String(a.appliance_id)}
-        contentContainerStyle={s.list}
-        ListHeaderComponent={<BillCard bill={bill} />}
-        renderItem={({ item }) => {
-          const reading = latest[item.appliance_id];
-          const isLive = live(item);
-          return (
-            <View style={s.card}>
-              <View style={s.cardText}>
-                <Text style={s.name}>{item.appliance_name}</Text>
-                <Text style={s.sub}>
-                  {item.smart_plug?.smartplug_name ?? 'Smart plug'} · outlet {item.outlet_no}
-                  {item.appliance_location ? ` · ${item.appliance_location}` : ''}
-                </Text>
-                <View style={s.statusRow}>
-                  <View style={[s.dot, { backgroundColor: isLive ? colors.live : '#B6BDC2' }]} />
-                  <Text style={s.status}>
-                    {!reading
-                      ? 'Waiting for the first reading'
-                      : isLive
-                        ? `Live · ${secondsAgo(reading, now)}s ago`
-                        : `Offline · last seen ${timeOf(reading)}`}
+  const perDay = sumBy(week ?? [], dayOf);
+  const todayKwh = perDay[today] ?? 0;
+  const rate = bill ? Number(bill.rate_per_kwh) : null;
+  // Same stretch of the day, today against yesterday (completed hours only).
+  const sameTime = (day: string) => total(hours.filter((r) => dayOf(r) === day && hourOf(r) < hour));
+  const versus = hour > 0 ? change(sameTime(today), sameTime(yesterday)) : null;
+
+  const perApplianceToday = sumBy((week ?? []).filter((r) => dayOf(r) === today), (r) => r.appliance_id);
+  const top = (live.appliances ?? [])
+    .map((a) => ({ a, kwh: perApplianceToday[a.appliance_id] ?? 0 }))
+    .sort((x, y) => y.kwh - x.kwh)
+    .slice(0, 2);
+
+  const hasAppliances = (live.appliances?.length ?? 0) > 0;
+  const pickedDay = days.find((d) => d.key === picked);
+
+  return (
+    <Screen>
+      <Header
+        title={household?.household_name ?? 'ElecTrack'}
+        subtitle={`${greeting}, ${profile?.user_firstname ?? ''}`.trim()}
+        right={<IconButton icon="notifications-outline" label="Alerts" dot={unread > 0} onPress={() => router.push('/alerts')} />}
+      />
+      <ErrorText>{error ?? live.error}</ErrorText>
+
+      {live.appliances === null ? (
+        <StateCard kind="loading" title="Refreshing energy data" text="Gathering the latest readings from your paired devices." />
+      ) : !hasAppliances ? (
+        <StateCard
+          kind="empty"
+          title="No usage data yet"
+          text="Pair a smart plug and tell ElecTrack what is plugged in. Your first readings appear within a minute."
+          action="Pair a smart plug"
+          onAction={() => router.push('/pair')}
+        />
+      ) : (
+        <>
+          <Card accent>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Ionicons name="flash-outline" size={16} color={colors.brand} />
+              <Text style={[styles.body, { flex: 1 }]}>Energy today</Text>
+              <Pill text={live.onlineCount > 0 ? 'LIVE' : 'OFFLINE'} tone={live.onlineCount > 0 ? 'ok' : 'muted'} icon={live.onlineCount > 0 ? 'radio-outline' : 'cloud-offline-outline'} />
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-end', marginTop: 10 }}>
+              <Text style={[styles.big, { flex: 1 }]}>
+                {formatKwh(todayKwh)}
+                <Text style={styles.unit}> kWh</Text>
+              </Text>
+              {rate !== null ? <Text style={{ color: colors.cyan, fontWeight: '700', fontSize: 15, marginBottom: 6 }}>{formatPeso(todayKwh * rate)} est.</Text> : null}
+            </View>
+            <View style={{ flexDirection: 'row', marginTop: 14 }}>
+              <Stat label="Current power" value={formatKw(live.totalWatts)} note={`${live.onlineCount} of ${live.appliances.length} appliances reporting`} />
+              <Pressable style={{ flex: 1 }} onPress={() => router.push('/bill')}>
+                <Stat
+                  label="Month projection"
+                  value={bill ? formatPeso(Number(bill.forecast_kwh != null ? bill.estimated_cost : bill.cost_sofar)) : '—'}
+                  note={bill ? (bill.forecast_kwh != null ? 'Tap for the estimate' : 'So far this month') : 'Waiting for an approved rate'}
+                />
+              </Pressable>
+            </View>
+            {versus ? (
+              <>
+                <View style={styles.divider} />
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name={versus.lower ? 'trending-down' : 'trending-up'} size={14} color={versus.lower ? colors.brand : colors.amber} />
+                  <Text style={styles.small}>
+                    <Text style={{ color: versus.lower ? colors.brand : colors.amber, fontWeight: '700' }}>{versus.phrase}</Text> this time
+                    yesterday
                   </Text>
                 </View>
-              </View>
-              <Text style={[s.watts, !isLive && { color: colors.faint }]}>
-                {reading ? formatWatts(reading.reading_watts) : '—'}
-                <Text style={s.unit}> W</Text>
+              </>
+            ) : null}
+          </Card>
+
+          <Card>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 14 }}>
+              <Text style={[styles.h2, { flex: 1 }]}>Usage overview</Text>
+              <Text style={styles.small}>
+                {pickedDay ? `${pickedDay.title} · ${formatKwh(perDay[pickedDay.key] ?? 0)} kWh` : 'Last 7 days'}
               </Text>
             </View>
-          );
-        }}
-      />
-    );
-  }
+            <Bars
+              data={days.map((d) => ({ key: d.key, label: d.letter, value: perDay[d.key] ?? 0, title: d.title }))}
+              selected={picked}
+              onSelect={setPicked}
+              height={110}
+            />
+          </Card>
 
-  return (
-    <View style={s.screen}>
-      <StatusBar style="light" />
-      <View style={[s.header, { paddingTop: insets.top + 16 }]}>
-        <Text style={s.brand}>{(household?.household_name ?? 'ElecTrack').toUpperCase()}</Text>
-        <Text style={s.totalLabel}>Using right now</Text>
-        <Text style={s.total}>
-          {formatWatts(totalWatts)}
-          <Text style={s.totalUnit}> W</Text>
-        </Text>
-      </View>
-      {body}
-    </View>
+          {insight ? (
+            <Card accent onPress={() => router.push('/coach')}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <Ionicons name="sparkles-outline" size={16} color={colors.brand} />
+                <Text style={[styles.h3, { flex: 1 }]}>AI insight</Text>
+                <Pill text={insight.insight_type === 'Unusual Usage' ? 'UNUSUAL' : 'TIP'} tone={insight.insight_type === 'Unusual Usage' ? 'warn' : 'info'} />
+              </View>
+              <Text style={styles.body}>{insight.recommendation_text}</Text>
+            </Card>
+          ) : null}
+
+          <SectionTitle title="Top-consuming appliances" action="See all" onAction={() => router.push('/appliances')} />
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            {top.map(({ a, kwh }) => {
+              const look = lookOf(a.appliance_category);
+              return (
+                <Card key={a.appliance_id} style={{ flex: 1, padding: 12 }} onPress={() => router.push({ pathname: '/appliance-details', params: { id: String(a.appliance_id) } })}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <IconTile icon={look.icon} tone={look.tone} size={30} />
+                    <Text style={[styles.h3, { flex: 1, fontSize: 13 }]} numberOfLines={1}>
+                      {a.appliance_name}
+                    </Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: 10 }}>
+                    <Text style={[styles.tiny, { flex: 1 }]}>{todayKwh > 0 ? `${Math.round((kwh / todayKwh) * 100)}% of today` : 'No use today'}</Text>
+                    <Text style={[styles.h3, { fontSize: 13 }]}>{formatKwh(kwh)} kWh</Text>
+                  </View>
+                </Card>
+              );
+            })}
+          </View>
+        </>
+      )}
+    </Screen>
   );
 }
-
-function BillCard({ bill }: { bill: Bill | null | undefined }) {
-  if (bill === undefined) return null;
-  const month = MONTHS[manilaClock().getUTCMonth()];
-  if (bill === null) {
-    return (
-      <View style={s.bill}>
-        <Text style={s.billCaption}>{month.toUpperCase()} BILL ESTIMATE</Text>
-        <Text style={s.billNote}>Not available yet. An administrator has to approve the VECO rate first.</Text>
-      </View>
-    );
-  }
-  const projected = bill.forecast_kwh != null;
-  return (
-    <View style={s.bill}>
-      <Text style={s.billCaption}>{month.toUpperCase()} BILL ESTIMATE</Text>
-      <Text style={s.billAmount}>{formatPeso(Number(projected ? bill.estimated_cost : bill.cost_sofar))}</Text>
-      <Text style={s.billLine}>
-        {projected
-          ? `Projected for the whole month · about ${formatKwh(Number(bill.forecast_kwh))} kWh`
-          : 'So far this month. A full-month projection appears after one day of readings.'}
-      </Text>
-      {projected ? (
-        <Text style={s.billLine}>
-          So far: {formatPeso(Number(bill.cost_sofar))} · {formatKwh(Number(bill.usage_sofar_kwh))} kWh
-        </Text>
-      ) : null}
-      <Text style={s.billNote}>
-        Monitored appliances only, at the approved VECO residential rate of {formatPeso(Number(bill.rate_per_kwh))} per
-        kWh. Your actual bill may differ.
-      </Text>
-    </View>
-  );
-}
-
-function Empty({ title, text, children }: { title: string; text: string; children?: React.ReactNode }) {
-  return (
-    <View style={{ padding: 24, marginTop: 24 }}>
-      <Text style={{ fontSize: 18, fontWeight: '600', color: colors.text, marginBottom: 8 }}>{title}</Text>
-      <Text style={{ fontSize: 14, color: colors.muted, lineHeight: 20, marginBottom: 12 }}>{text}</Text>
-      {children}
-    </View>
-  );
-}
-
-const secondsAgo = (r: Reading, now: number) =>
-  Math.max(0, Math.round((now - new Date(r.reading_timestamp).getTime()) / 1000));
-const timeOf = (r: Reading) =>
-  new Date(r.reading_timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-const s = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  header: { backgroundColor: colors.brand, paddingHorizontal: 20, paddingBottom: 24 },
-  brand: { color: colors.brandSoft, fontSize: 13, fontWeight: '700', letterSpacing: 1 },
-  totalLabel: { color: '#D5E6DF', fontSize: 14, marginTop: 16 },
-  total: { color: '#FFFFFF', fontSize: 48, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  totalUnit: { fontSize: 22, fontWeight: '500', color: '#D5E6DF' },
-  list: { padding: 16, gap: 12 },
-  bill: {
-    backgroundColor: colors.card,
-    borderRadius: 14,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  billCaption: { fontSize: 12, fontWeight: '700', color: colors.muted, letterSpacing: 0.5 },
-  billAmount: { fontSize: 32, fontWeight: '700', color: colors.text, marginTop: 4, fontVariant: ['tabular-nums'] },
-  billLine: { fontSize: 13, color: colors.text, marginTop: 4, lineHeight: 19 },
-  billNote: { fontSize: 12, color: colors.muted, marginTop: 8, lineHeight: 17 },
-  card: {
-    backgroundColor: colors.card,
-    borderRadius: 14,
-    padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  cardText: { flex: 1, paddingRight: 12 },
-  name: { fontSize: 17, fontWeight: '600', color: colors.text },
-  sub: { fontSize: 13, color: colors.muted, marginTop: 2 },
-  statusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
-  dot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
-  status: { fontSize: 12, color: colors.muted },
-  watts: { fontSize: 26, fontWeight: '700', color: colors.text, fontVariant: ['tabular-nums'] },
-  unit: { fontSize: 14, fontWeight: '500', color: colors.muted },
-});

@@ -3,6 +3,8 @@ const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 export const formatWatts = (w: number) => (w >= 100 ? Math.round(w).toLocaleString('en-US') : w.toFixed(1));
 
+export const formatKw = (w: number) => (w >= 1000 ? `${(w / 1000).toFixed(2)} kW` : `${Math.round(w)} W`);
+
 export const formatKwh = (kwh: number) => (kwh >= 100 ? kwh.toFixed(0) : kwh >= 10 ? kwh.toFixed(1) : kwh.toFixed(2));
 
 export const formatPeso = (amount: number) =>

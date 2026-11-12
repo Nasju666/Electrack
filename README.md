@@ -101,7 +101,7 @@ only sends a couple of emails per hour, which blocks testing. Turn it back on
 **Using it**
 1. Open the app and create an account.
 2. Set up your household.
-3. Account tab → Devices and appliances → Pair a device → `ELT-PLUG-001`, then say what is plugged in.
+3. Profile tab → Smart plugs → + → enter `ELT-PLUG-001`, then say what is plugged in.
 4. Pair `ELT-STRIP-001` the same way and add an appliance to each outlet.
 5. With the simulator running, the Home tab shows live watts.
 
@@ -117,9 +117,9 @@ update users set user_role = 'Admin' where user_email = 'admin@example.com';
 
 ## History and bill estimate
 
-- **History tab:** energy per hour (Today) or per day (7 / 30 days), for the whole
-  household or one appliance.
-- **Bill estimate (Home tab):** this month's energy so far, projected to month end,
+- **Insights tab:** energy per hour (Daily) or per day (Weekly / Monthly), compared
+  with the period before, and split by appliance. Tap an appliance for its own history.
+- **Bill estimate (Home tab → Month projection):** this month's energy so far, projected to month end,
   times the approved VECO rate. It covers monitored appliances only.
 
 The estimate stays hidden until an approved rate exists. Until the admin screens
@@ -135,7 +135,7 @@ values (14.96, '2026-11-01', 'Manual', 'Approved');
 
 - **High Usage:** an appliance stays above its alert level for two readings in a
   row. At most one alert per appliance every 30 minutes. Set the level per
-  appliance under Account → Devices and appliances.
+  appliance under Profile → Smart plugs (tap the appliance).
 - **Device Offline:** a paired device is silent for 3 minutes. Checked once a
   minute by a scheduled job (Supabase Cron).
 
@@ -173,7 +173,7 @@ The "Fetch from VECO" button in the app works without this setup.
 ## AI module (`ai/`)
 
 `ai/analyze.py` studies the last 35 days of hourly energy per appliance and
-fills the app's Insights tab:
+fills the app's AI Energy Coach (Insights tab → AI Energy Coach):
 
 - **Usage patterns:** K-Means learns each appliance's own idle and in-use power
   levels; from those come its usual hours, times of day and share of energy.
@@ -200,9 +200,11 @@ py ai\analyze.py                                   # analyses and saves the insi
 ```
 `backfill.py` writes demo readings. Use it on test households only.
 
-**Run it daily.** `.github/workflows/ai-analysis.yml` runs the analysis every
-night once the repository is on GitHub and has two secrets, `SUPABASE_URL` and
-`SUPABASE_SECRET_KEY` (repository Settings → Secrets and variables → Actions).
+**Run it daily.** Copy `ai\ai-analysis.workflow.yml` to
+`.github\workflows\ai-analysis.yml` (create the folders). It then runs the
+analysis every night once the repository is on GitHub and has two secrets,
+`SUPABASE_URL` and `SUPABASE_SECRET_KEY` (repository Settings → Secrets and
+variables → Actions).
 
 ## After pulling new code
 
@@ -214,6 +216,14 @@ cd app
 npm install
 npx expo start -c
 ```
+
+## App design
+
+The app follows the team's Figma mockup (dark theme). The shared building blocks
+are in `app/src/lib/ui.tsx`; change a colour or a card there and every screen
+follows. Resident tabs: Home, Appliances, Insights, Alerts, Profile. Admin tabs:
+Dashboard, Users, Rate, Reports, Profile. Residents and admins use the same
+sign-in screen; the account's role decides which side opens.
 
 ## Things to know
 

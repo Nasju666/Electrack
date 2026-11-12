@@ -1,36 +1,26 @@
-import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router/js-tabs';
-import type { ColorValue } from 'react-native';
 import { useUnreadAlerts } from '@/lib/alerts';
+import { tabIcon, useTabBarOptions } from '@/lib/tabs';
 import { colors } from '@/lib/ui';
-
-type IconName = keyof typeof Ionicons.glyphMap;
-const icon = (name: IconName) => ({ color, size }: { color: ColorValue | null; size: number }) => (
-  <Ionicons name={name} color={(color ?? undefined) as string | undefined} size={size} />
-);
 
 export default function TabsLayout() {
   const unread = useUnreadAlerts();
+  const tabBarOptions = useTabBarOptions();
   return (
-    <Tabs
-      screenOptions={{
-        tabBarActiveTintColor: colors.brand,
-        headerStyle: { backgroundColor: colors.brand },
-        headerTintColor: '#fff',
-      }}
-    >
-      <Tabs.Screen name="index" options={{ title: 'Home', headerShown: false, tabBarIcon: icon('flash') }} />
-      <Tabs.Screen name="history" options={{ title: 'History', tabBarIcon: icon('bar-chart') }} />
-      <Tabs.Screen name="insights" options={{ title: 'Insights', tabBarIcon: icon('bulb') }} />
+    <Tabs screenOptions={tabBarOptions}>
+      <Tabs.Screen name="index" options={{ title: 'Home', tabBarIcon: tabIcon('home-outline') }} />
+      <Tabs.Screen name="appliances" options={{ title: 'Appliances', tabBarIcon: tabIcon('flash-outline') }} />
+      <Tabs.Screen name="insights" options={{ title: 'Insights', tabBarIcon: tabIcon('stats-chart-outline') }} />
       <Tabs.Screen
         name="alerts"
         options={{
           title: 'Alerts',
-          tabBarIcon: icon('notifications'),
+          tabBarIcon: tabIcon('notifications-outline'),
           tabBarBadge: unread > 0 ? (unread > 99 ? '99+' : unread) : undefined,
+          tabBarBadgeStyle: { backgroundColor: colors.danger, color: '#fff', fontSize: 10 },
         }}
       />
-      <Tabs.Screen name="account" options={{ title: 'Account', tabBarIcon: icon('person') }} />
+      <Tabs.Screen name="profile" options={{ title: 'Profile', tabBarIcon: tabIcon('person-circle-outline') }} />
     </Tabs>
   );
 }

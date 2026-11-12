@@ -1,15 +1,21 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
+import { LIMIT_W } from '@/lib/appliances';
+import { formatKw } from '@/lib/format';
+import { useLive } from '@/lib/live';
 import { supabase } from '@/lib/supabase';
 import { isRecent, type Appliance, type SmartPlug } from '@/lib/types';
-import { Button, Card, colors, ErrorText, Screen } from '@/lib/ui';
+import { Button, Card, colors, ErrorText, Header, IconButton, IconTile, Pill, Screen, Sheet, StateCard, styles } from '@/lib/ui';
 
 type Plug = SmartPlug & { appliance: Appliance[] };
 
 export default function Devices() {
   const router = useRouter();
+  const live = useLive();
   const [plugs, setPlugs] = useState<Plug[] | null>(null);
+  const [unpairing, setUnpairing] = useState<Plug | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
 
@@ -34,105 +40,109 @@ export default function Devices() {
     return () => clearInterval(timer);
   }, []);
 
-  function confirmUnpair(plug: Plug) {
-    Alert.alert(
-      `Unpair ${plug.smartplug_name ?? plug.smartplug_code}?`,
-      'Its appliances stop being monitored. Past readings are kept. You can pair it again with the same code.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Unpair',
-          style: 'destructive',
-          onPress: async () => {
-            const { error } = await supabase.rpc('unpair_smart_plug', { p_smartplug_id: plug.smartplug_id });
-            if (error) setError(error.message);
-            load();
-          },
-        },
-      ],
-    );
+  async function unpair(plug: Plug) {
+    setUnpairing(null);
+    const { error } = await supabase.rpc('unpair_smart_plug', { p_smartplug_id: plug.smartplug_id });
+    if (error) setError(error.message);
+    live.reload();
+    load();
   }
 
+  const online = (plugs ?? []).filter((p) => isRecent(p.smartplug_lastseen, now)).length;
+
   return (
-    <Screen>
+    <Screen bottom>
+      <Header
+        title="Connected devices"
+        subtitle={plugs ? `${plugs.length} paired · ${online} online` : undefined}
+        onBack={() => router.back()}
+        right={<IconButton icon="add" label="Pair a device" onPress={() => router.push('/pair')} />}
+      />
       <ErrorText>{error}</ErrorText>
+
       {!plugs ? (
-        <ActivityIndicator style={{ marginTop: 32 }} color={colors.brand} />
+        error ? null : <StateCard kind="loading" title="Loading your devices" />
       ) : plugs.length === 0 ? (
-        <Text style={s.empty}>
-          No devices yet. Pair your ElecTrack plug or power strip using the code printed on it.
-        </Text>
+        <StateCard
+          kind="empty"
+          title="No devices yet"
+          text="Pair your ElecTrack plug or power strip using the code printed on it."
+          action="Pair a smart plug"
+          onAction={() => router.push('/pair')}
+        />
       ) : (
         plugs.map((plug) => {
-          const online = isRecent(plug.smartplug_lastseen, now);
+          const isOnline = isRecent(plug.smartplug_lastseen, now);
+          const isStrip = plug.device_type === 'Power Strip';
           const outlets = Array.from({ length: plug.outlet_count }, (_, i) => i + 1);
           return (
             <Card key={plug.smartplug_id}>
-              <View style={s.plugHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <IconTile icon="flash-outline" />
                 <View style={{ flex: 1 }}>
-                  <Text style={s.plugName}>{plug.smartplug_name ?? plug.device_type}</Text>
-                  <Text style={s.sub}>
-                    {plug.device_type} · {plug.smartplug_code}
+                  <Text style={styles.h3}>{plug.smartplug_name ?? plug.device_type}</Text>
+                  <Text style={styles.small}>
+                    {isStrip ? `${plug.outlet_count} outlets · limit ${LIMIT_W['Power Strip']} W/outlet` : `1 appliance · limit ${LIMIT_W['High-Power Plug'].toLocaleString('en-US')} W`}
                   </Text>
                 </View>
-                <View style={[s.badge, { backgroundColor: online ? '#DDF3E9' : '#ECEFEE' }]}>
-                  <Text style={[s.badgeText, { color: online ? '#11734C' : colors.muted }]}>
-                    {online ? 'Online' : 'Offline'}
-                  </Text>
-                </View>
+                <Pill text={isOnline ? 'ONLINE' : 'OFFLINE'} tone={isOnline ? 'ok' : 'muted'} icon={isOnline ? 'wifi' : 'cloud-offline-outline'} />
               </View>
-
+              <View style={{ height: 8 }} />
               {outlets.map((outlet) => {
-                const appliance = plug.appliance.find((a) => a.outlet_no === outlet && a.appliance_status !== 'Removed');
+                const appliance = plug.appliance.find((a) => a.outlet_no === outlet && a.appliance_status === 'Active');
+                const watts = appliance ? live.watts(appliance.appliance_id) : null;
                 return (
                   <Pressable
                     key={outlet}
-                    style={s.outlet}
+                    style={[styles.row, styles.rowBorder]}
                     onPress={() =>
                       router.push({
                         pathname: '/appliance',
-                        params: appliance
-                          ? { id: String(appliance.appliance_id) }
-                          : { plug: String(plug.smartplug_id), outlet: String(outlet) },
+                        params: appliance ? { id: String(appliance.appliance_id) } : { plug: String(plug.smartplug_id), outlet: String(outlet) },
                       })
                     }
                   >
-                    <Text style={s.outletNo}>Outlet {outlet}</Text>
-                    <Text style={[s.outletName, !appliance && { color: colors.brand }]} numberOfLines={1}>
+                    <Ionicons name="radio-outline" size={16} color={colors.cyan} />
+                    <Text style={[styles.small, { width: 62 }]}>Outlet {outlet}</Text>
+                    <Text style={[styles.rowTitle, !appliance && { color: colors.brand }]} numberOfLines={1}>
                       {appliance ? appliance.appliance_name : 'Add appliance'}
                     </Text>
-                    <Text style={s.chevron}>›</Text>
+                    {appliance ? <Text style={[styles.small, { color: watts !== null ? colors.brand : colors.muted }]}>{watts !== null ? formatKw(watts) : '—'}</Text> : null}
+                    <Ionicons name="chevron-forward" size={16} color={colors.muted} />
                   </Pressable>
                 );
               })}
-
-              <Pressable onPress={() => confirmUnpair(plug)} style={{ paddingTop: 12 }}>
-                <Text style={{ color: colors.danger, fontSize: 14 }}>Unpair device</Text>
-              </Pressable>
+              <View style={[styles.rowBorder, { paddingTop: 12 }]}>
+                <Text style={styles.tiny}>Device code {plug.smartplug_code}</Text>
+                <Text style={[styles.link, { color: colors.danger, marginTop: 8 }]} onPress={() => setUnpairing(plug)}>
+                  Unpair device
+                </Text>
+              </View>
             </Card>
           );
         })
       )}
-      <Button title="Pair a device" onPress={() => router.push('/pair')} />
+
+      <Card>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+          <Ionicons name="help-circle-outline" size={18} color={colors.cyan} />
+          <Text style={styles.h3}>Having connection trouble?</Text>
+        </View>
+        <Text style={styles.small}>
+          Keep the device within Wi-Fi range and check that your home network is available. A device shows Offline
+          after 90 seconds without a reading.
+        </Text>
+      </Card>
+      <Text style={styles.footnote}>Smart plugs report energy data only. No remote power control.</Text>
+
+      <Sheet visible={!!unpairing} onClose={() => setUnpairing(null)}>
+        <Text style={styles.h1}>Unpair {unpairing?.smartplug_name ?? unpairing?.device_type}?</Text>
+        <Text style={[styles.body, { marginTop: 8, marginBottom: 8 }]}>
+          Its appliances stop being monitored. Past readings are kept, and you can pair it again with the same code.
+        </Text>
+        <Button title="Unpair device" kind="danger" onPress={() => unpairing && unpair(unpairing)} />
+        <Button title="Cancel" kind="secondary" onPress={() => setUnpairing(null)} />
+      </Sheet>
     </Screen>
   );
 }
-
-const s = StyleSheet.create({
-  empty: { fontSize: 15, color: colors.muted, lineHeight: 22, marginBottom: 12 },
-  plugHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
-  plugName: { fontSize: 17, fontWeight: '600', color: colors.text },
-  sub: { fontSize: 13, color: colors.muted, marginTop: 2 },
-  badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  badgeText: { fontSize: 12, fontWeight: '600' },
-  outlet: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  outletNo: { width: 72, fontSize: 13, color: colors.muted },
-  outletName: { flex: 1, fontSize: 15, color: colors.text, fontWeight: '500' },
-  chevron: { fontSize: 20, color: colors.faint, paddingLeft: 8 },
-});

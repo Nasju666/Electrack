@@ -1,17 +1,20 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import { supabase } from './supabase';
 
 /** Runs `onChange` whenever one of the signed-in user's notifications is created or updated. */
 export function useAlertChanges(channelName: string, onChange: () => void) {
+  // Each use gets its own channel. Two screens sharing one name would share one
+  // channel, and a channel cannot take new listeners once it is subscribed.
+  const unique = useId();
   useEffect(() => {
     const channel = supabase
-      .channel(channelName)
+      .channel(`${channelName}-${unique}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'notification' }, onChange)
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [channelName, onChange]);
+  }, [channelName, unique, onChange]);
 }
 
 /** Number of unread alerts, kept current. Used for the badge on the Alerts tab. */
