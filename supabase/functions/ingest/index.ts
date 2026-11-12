@@ -51,14 +51,17 @@ Deno.serve(async (req) => {
 
   const { data: plug, error: plugErr } = await db
     .from("smart_plug")
-    .select("smartplug_id, appliance(appliance_id, outlet_no)")
+    .select("smartplug_id, appliance(appliance_id, outlet_no, appliance_status)")
     .eq("smartplug_code", body.code)
     .maybeSingle();
   if (plugErr) return json(500, { error: plugErr.message });
   if (!plug) return json(404, { error: `unknown device code ${body.code}` });
 
+  // Only outlets with an active appliance are recorded. An unpaired device, or
+  // an outlet nobody has labelled yet, is acknowledged but stores nothing.
   const applianceByOutlet = new Map<number, number>(
-    (plug.appliance as { appliance_id: number; outlet_no: number }[])
+    (plug.appliance as { appliance_id: number; outlet_no: number; appliance_status: string }[])
+      .filter((a) => a.appliance_status === "Active")
       .map((a) => [a.outlet_no, a.appliance_id]),
   );
 

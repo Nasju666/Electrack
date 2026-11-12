@@ -428,3 +428,7 @@ enabled = true
 [functions.ingest]
 # Devices have no user login; the function checks x-device-secret itself.
 verify_jwt = false
+
+[functions.fetch-veco-rate]
+# Checks for an admin login or the schedule secret itself.
+verify_jwt = false

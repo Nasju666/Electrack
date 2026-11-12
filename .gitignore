@@ -6,3 +6,4 @@ supabase/.temp/
 supabase/.branches/
 __pycache__/
 node_modules/
+ai/.env
