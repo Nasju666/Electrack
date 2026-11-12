@@ -7,3 +7,4 @@ supabase/.branches/
 __pycache__/
 node_modules/
 ai/.env
+firmware/electrack/config.h

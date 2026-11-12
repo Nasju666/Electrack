@@ -2,6 +2,8 @@
 
 IoT smart energy monitoring: custom ESP32 + PZEM-004T devices → Supabase → Android app.
 
+**Continuing this project?** Read `HANDOFF.md` first: current state, decisions, lessons, and the plan for everything that is left.
+
 ```
 device (simulator now, ESP32 later)
    │  POST readings every few seconds
