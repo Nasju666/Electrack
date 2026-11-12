@@ -1,0 +1,24 @@
+# Runs the ElecTrack AI analysis once a day.
+# Needs two repository secrets (GitHub -> Settings -> Secrets and variables -> Actions):
+#   SUPABASE_URL          https://<project-ref>.supabase.co
+#   SUPABASE_SECRET_KEY   the project's secret key (sb_secret_...)
+name: AI analysis
+
+on:
+  schedule:
+    - cron: "30 18 * * *"   # 02:30 Philippine time, after the day is complete
+  workflow_dispatch:         # lets you start it by hand from the Actions tab
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r ai/requirements.txt
+      - run: python ai/analyze.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
